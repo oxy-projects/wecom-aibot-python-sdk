@@ -10,7 +10,8 @@ readme = "README.md"
 license = "MIT"
 requires-python = ">=3.15"
 authors = [
-    {name = "WeCom", email = "wecom@tencent.com"},
+    { name = "WeCom", email = "wecom@tencent.com" },
+    { name = "wangjz", email = "wangjz_vip@163.com" },
 ]
 keywords = ["wecom", "wechat-work", "aibot", "websocket", "sdk"]
 classifiers = [
