@@ -11,16 +11,11 @@ import json
 import os
 import platform
 import signal
-import sys
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 from urllib.parse import urlparse
 
 from dotenv import load_dotenv
-
-# 将上级目录添加到 sys.path，以便直接运行示例
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 # 加载 .env 文件中的环境变量
 load_dotenv()

@@ -1,14 +1,14 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
 
 [project]
 name = "wecom-aibot-python-sdk"
-version = "1.0.1"
+version = "2.0.0"
 description = "企业微信智能机器人 Python SDK —— 基于 WebSocket 长连接通道，提供消息收发、流式回复、模板卡片、事件回调、文件下载解密等核心能力。"
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.8"
+requires-python = ">=3.15"
 authors = [
     {name = "WeCom", email = "wecom@tencent.com"},
 ]
@@ -17,12 +17,7 @@ classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.15",
     "Topic :: Communications :: Chat",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
@@ -35,7 +30,7 @@ dependencies = [
     "certifi>=2023.0",
 ]
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
     "python-dotenv>=1.0",
 ]
@@ -44,5 +39,19 @@ dev = [
 Homepage = "https://github.com/WecomTeam/wecom-aibot-python-sdk"
 Repository = "https://github.com/WecomTeam/wecom-aibot-python-sdk"
 
-[tool.setuptools.packages.find]
-include = ["aibot*"]
+[tool.hatch.build.targets.wheel]
+packages = ["src/aibot"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src/aibot",
+    "/tests",
+    "/examples",
+    "/README.md",
+    "/COMPARISON.md",
+    "/LICENSE",
+    "/.env.example",
+    "/.python-version",
+    "/pyproject.toml",
+    "/uv.lock",
+]

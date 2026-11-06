@@ -71,7 +71,7 @@ assert crypto.decrypt(result["encrypt"]) == "消息正文"
 在 SDK 根目录运行测试（集成测试需要允许监听本机临时端口）：
 
 ```bash
-python -m unittest discover -s tests -v
+uv run python -m unittest discover -s tests -v
 ```
 
 ### 媒体便捷接口
@@ -93,7 +93,7 @@ await ws_client.reply_video(frame, video_media_id, title="演示", description="
 
 以上便捷方法复用 `reply_media`。分片并发与重试保持不变。心跳超时会独立调度重连，避免等待底层关闭阻塞恢复；复用现有重连任务去重与手动断开取消逻辑。
 
-多媒体回显示例：`python examples/media_echo.py`（使用 `.env` 中的 `WECHAT_BOT_ID` 和 `WECHAT_BOT_SECRET`）。支持图片原样回复、文本转为 txt 文件回复。
+多媒体回显示例：`uv run examples/media_echo.py`（使用 `.env` 中的 `WECHAT_BOT_ID` 和 `WECHAT_BOT_SECRET`）。支持图片原样回复、文本转为 txt 文件回复。
 
 ## ✨ 特性
 
@@ -114,17 +114,34 @@ await ws_client.reply_video(frame, video_media_id, title="演示", description="
 ## 📦 安装
 
 ```bash
-pip install wecom-aibot-python-sdk
+uv add wecom-aibot-python-sdk
 ```
 
 **依赖：**
-- Python >= 3.8
+- Python >= 3.15
 - websockets >= 12.0
 - aiohttp >= 3.9
 - pyee >= 11.0
 - cryptography >= 42.0
 - certifi>=2023.0
 - python-dotenv>=1.0 (可选，用于加载 .env 文件)
+
+## 本地开发与构建
+
+在本项目根目录执行（需预先安装 uv）：
+
+```bash
+uv python install 3.15
+uv sync --locked
+cp .env.example .env
+uv run examples/basic.py
+uv run python -m unittest discover -s tests -v
+uv build
+```
+
+`uv sync` 自动创建 `.venv`，以可编辑模式安装 SDK，并默认安装 `dev` 依赖组中的 `python-dotenv`。示例通过 `uv run` 使用已安装的 SDK。仅安装运行依赖时使用 `uv sync --locked --no-dev`。
+
+依赖统一在 `pyproject.toml` 中维护：`uv add 包名` 添加运行依赖，`uv add --dev 包名` 添加开发依赖；变更后提交 `pyproject.toml` 与 `uv.lock`。`uv build` 使用 hatchling 生成 wheel 和源码包，输出到 `dist/`。
 
 ## ⚙️ 配置
 
@@ -397,24 +414,18 @@ ws_client = WSClient(
 
 ## 📂 项目结构
 
-```
-aibot-python-sdk/
-├── aibot/
-│   ├── __init__.py          # 入口文件，统一导出
-│   ├── client.py            # WSClient 核心客户端
-│   ├── ws.py                # WebSocket 长连接管理器
-│   ├── message_handler.py   # 消息解析与事件分发
-│   ├── api.py               # HTTP API 客户端（文件下载）
-│   ├── crypto_utils.py      # AES-256-CBC 文件解密
-│   ├── logger.py            # 默认日志实现
-│   ├── utils.py             # 工具方法（generate_req_id 等）
-│   └── types.py             # 类型定义（枚举、常量、dataclass）
-├── examples/
-│   └── basic.py             # 基础使用示例
-├── pyproject.toml           # 项目配置
-├── requirements.txt         # 依赖清单
-├── README.md                # 本文件
-└── COMPARISON.md            # Node.js 与 Python 版本对比
+```text
+wecom-aibot-python-sdk/
+├── src/aibot/              # SDK 源码，安装后仍使用 import aibot
+├── tests/                  # unittest 单元与本地集成测试
+├── examples/               # basic.py / media_echo.py / comparison_test.py
+├── pyproject.toml          # 元数据、依赖、开发依赖与 hatchling 构建配置
+├── uv.lock                 # uv 依赖锁文件，纳入版本控制
+├── .python-version         # Python 3.15
+├── .env.example            # 示例环境变量
+├── README.md
+├── COMPARISON.md
+└── LICENSE
 ```
 
 ## 📄 License

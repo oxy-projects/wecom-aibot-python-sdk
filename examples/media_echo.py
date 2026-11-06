@@ -10,7 +10,7 @@
   WECHAT_BOT_SECRET=your_bot_secret
 
 启动方式：
-  python examples/media_echo.py
+  uv run examples/media_echo.py
 """
 
 import asyncio
@@ -19,11 +19,9 @@ import platform
 import signal
 import sys
 import time
-from pathlib import Path
 
 from dotenv import load_dotenv
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 load_dotenv()
 
 from aibot import MediaType, WSClient, WSClientOptions
