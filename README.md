@@ -1,4 +1,4 @@
-# wecom-aibot-python-sdk (Python)
+# wecom-aibot-py-sdk (Python)
 
 企业微信智能机器人 Python SDK —— 基于 WebSocket 长连接通道，提供消息收发、流式回复、模板卡片、事件回调、文件下载解密等核心能力。
 
@@ -103,7 +103,7 @@ await ws_client.reply_video(frame, video_media_id, title="演示", description="
 
 1. 在 GitHub 仓库 Settings → Environments 创建 `pypi` 环境。
 2. 在 PyPI 的项目管理 → Publishing 添加 GitHub Trusted Publisher；如果是尚未创建的新包，在 <https://pypi.org/manage/account/publishing/> 添加 Pending Publisher。
-3. 按当前 Git remote 填写：Owner 为 `oxy-projects`，Repository 为 `wecom-aibot-python-sdk`，Workflow 为 `publish.yml`，Environment 为 `pypi`。PyPI 项目名为 `wecom-aibot-python-sdk`。仓库转移后需同步更新这些配置。
+3. 按当前 Git remote 填写：Owner 为 `oxy-projects`，Repository 为 `wecom-aibot-python-sdk`，Workflow 为 `publish.yml`，Environment 为 `pypi`。PyPI 项目名为 `wecom-aibot-py-sdk`。仓库转移后需同步更新这些配置。
 
 已有 PyPI 同名项目必须拥有维护权限；若属于其他维护者，需要先更换为可用的包名，并同步修改 `pyproject.toml` 和工作流中的 PyPI 链接。
 
@@ -130,7 +130,7 @@ await ws_client.reply_video(frame, video_media_id, title="演示", description="
 ## 📦 安装
 
 ```bash
-uv add wecom-aibot-python-sdk
+uv add wecom-aibot-py-sdk
 ```
 
 **依赖：**
