@@ -3,6 +3,97 @@
 企业微信智能机器人 Python SDK —— 基于 WebSocket 长连接通道，提供消息收发、流式回复、模板卡片、事件回调、文件下载解密等核心能力。
 
 > 本项目是 [@wecom/aibot-node-sdk](https://www.npmjs.com/package/@wecom/aibot-node-sdk)（Node.js 版）的 Python 等价实现。
+> 补齐了官方NodeSDK更新未同步的功能。
+> 借鉴了[@ticoAg/wecom-aibot-python-sdk](https://github.com/ticoAg/wecom-aibot-python-sdk)的扩展功能。
+
+## 新增功能：素材上传、媒体消息和连接配置
+
+```python
+from pathlib import Path
+
+# 上传并回复文件；type 支持 file / image / voice / video
+media = await ws_client.upload_media(
+    Path("document.pdf").read_bytes(),
+    {"type": "file", "filename": "document.pdf"},
+)
+await ws_client.reply_media(frame, "file", media["media_id"])
+await ws_client.send_media_message("target_userid", "file", media["media_id"])
+
+# 视频可附带标题和描述
+await ws_client.reply_media(frame, "video", video_media_id,
+                            {"title": "演示", "description": "操作说明"})
+
+# 前一帧未收到 ACK 时跳过当前中间帧，返回 "skipped"；最终帧仍进入队列
+await ws_client.reply_stream_non_blocking(frame, stream_id, "中间内容", False)
+await ws_client.reply_stream_non_blocking(frame, stream_id, "最终完整内容", True)
+```
+
+上传按 512 KiB 分片，最多 100 片（50 MiB）；1～4 片全部并发，5～10 片并发 3，更多片并发 2。每片失败后最多重试两次，全部成功后才完成上传。空素材会被拒绝；服务端仍可能有各媒体类型自己的大小和格式限制。
+
+新增 `message.video` 事件。`event.disconnected_event` 表示被新连接踢下线，此时 SDK 清理等待中的请求、关闭连接并停止自动重连；可显式调用 `await connect()` 重新连接。
+
+新增配置：
+
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `scene` | `None` | 可选认证场景值 |
+| `plug_version` | `None` | 可选插件版本 |
+| `max_auth_failure_attempts` | `5` | 首次认证失败后允许的重试次数，`-1` 为无限 |
+| `max_reply_queue_size` | `500` | 单个 req_id 的回复队列上限，超过则拒绝新消息 |
+| `ws_options` | `{}` | 传入 `websockets.connect` 的 Python 连接参数 |
+
+认证失败会主动关闭连接并指数退避重试；认证成功后重置认证与网络重试计数。耗尽后分别触发 `WSAuthFailureError`、`WSReconnectExhaustedError`，可在 `error` 事件中按异常类型或 `code` 判断。
+
+自定义 CA 示例：
+
+```python
+import ssl
+
+context = ssl.create_default_context(cafile="company-ca.pem")
+options = WSClientOptions(
+    bot_id="bot-id", secret="secret",
+    ws_url="wss://your-server.example",
+    ws_options={"ssl": context},
+)
+```
+
+通用消息加解密（独立于文件解密）：
+
+```python
+from aibot import WecomCrypto
+
+crypto = WecomCrypto("token", "your_encoding_aes_key", receive_id="your_corp_or_bot_id")
+result = crypto.encrypt("消息正文", "1234567890", "nonce")
+assert crypto.verify_signature(result["signature"], "1234567890", "nonce", result["encrypt"])
+assert crypto.decrypt(result["encrypt"]) == "消息正文"
+```
+
+在 SDK 根目录运行测试（集成测试需要允许监听本机临时端口）：
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+### 媒体便捷接口
+
+支持 `MediaType.File/Image/Voice/Video` 枚举和对应字符串。上传保留原有 options 参数与字典返回值，也可传入预计算的 MD5：
+
+```python
+from aibot import MediaType
+
+media = await ws_client.upload_media(
+    image_bytes, {"type": MediaType.Image, "filename": "image.png"},
+    # md5="预先计算的 MD5",  # 可选；省略时自动计算
+)
+await ws_client.reply_image(frame, media["media_id"])
+await ws_client.reply_file(frame, file_media_id)
+await ws_client.reply_voice(frame, voice_media_id)
+await ws_client.reply_video(frame, video_media_id, title="演示", description="操作说明")
+```
+
+以上便捷方法复用 `reply_media`。分片并发与重试保持不变。心跳超时会独立调度重连，避免等待底层关闭阻塞恢复；复用现有重连任务去重与手动断开取消逻辑。
+
+多媒体回显示例：`python examples/media_echo.py`（使用 `.env` 中的 `WECHAT_BOT_ID` 和 `WECHAT_BOT_SECRET`）。支持图片原样回复、文本转为 txt 文件回复。
 
 ## ✨ 特性
 

@@ -17,7 +17,7 @@ except ImportError:
     # 未安装 certifi 时回退到系统默认证书
     _SSL_CONTEXT = ssl.create_default_context()
 
-from .types import WsCmd, WsFrame
+from .types import WsCmd, WsFrame, WSAuthFailureError, WSReconnectExhaustedError
 from .utils import generate_req_id
 
 # SDK 内置默认 WebSocket 连接地址
@@ -68,7 +68,16 @@ class WsConnectionManager:
         reconnect_base_delay: int = 1000,
         max_reconnect_attempts: int = 10,
         ws_url: Optional[str] = None,
+        ws_options: Optional[Dict[str, Any]] = None,
+        max_auth_failure_attempts: int = 5,
+        max_reply_queue_size: int = 500,
     ):
+        self._ws_options = dict(ws_options or {})
+        self._max_auth_failure_attempts = max_auth_failure_attempts
+        self._auth_failure_attempts = 0
+        self._last_close_was_auth_failure = False
+        self._reconnect_task = None
+        self._extra_auth_params = {}
         self._logger = logger
         self._ws_url = ws_url or DEFAULT_WS_URL
         self._heartbeat_interval = heartbeat_interval
@@ -97,8 +106,10 @@ class WsConnectionManager:
             Tuple["asyncio.Future[WsFrame]", Optional[asyncio.TimerHandle]],
         ] = {}
         self._reply_ack_timeout: float = 5.0  # 秒
-        self._max_reply_queue_size: int = 100
+        self._max_reply_queue_size: int = max_reply_queue_size
         self._processing_queues: set = set()  # 正在处理的 req_id 集合
+
+        self.on_server_disconnect: Optional[Callable[[str], None]] = None
 
         # 回调
         self.on_connected: Optional[Callable[[], None]] = None
@@ -108,14 +119,20 @@ class WsConnectionManager:
         self.on_reconnecting: Optional[Callable[[int], None]] = None
         self.on_error: Optional[Callable[[Exception], None]] = None
 
-    def set_credentials(self, bot_id: str, bot_secret: str) -> None:
+    def set_credentials(self, bot_id: str, bot_secret: str,
+                        extra_auth_params: Optional[Dict[str, Any]] = None) -> None:
         """设置认证凭证"""
         self._bot_id = bot_id
         self._bot_secret = bot_secret
+        self._extra_auth_params = dict(extra_auth_params or {})
 
     async def connect(self) -> None:
         """建立 WebSocket 连接"""
+        self._cancel_reconnect()
         self._is_manual_close = False
+        self._last_close_was_auth_failure = False
+        self._stop_heartbeat()
+        self._clear_pending_messages("Connection replaced")
 
         # 清理旧连接
         await self._cleanup_ws()
@@ -123,15 +140,15 @@ class WsConnectionManager:
         self._logger.info(f"Connecting to WebSocket: {self._ws_url}...")
 
         try:
-            self._ws = await websockets.connect(
-                self._ws_url,
-                ssl=_SSL_CONTEXT,
-                ping_interval=None,  # 我们自己管理心跳
-                ping_timeout=None,
-                close_timeout=5,
-            )
+            options = {"ping_interval": None, "ping_timeout": None, "close_timeout": 5}
+            if self._ws_url.startswith("wss://"):
+                options["ssl"] = _SSL_CONTEXT
+            options.update(self._ws_options)
+            self._ws = await websockets.connect(self._ws_url, **options)
+            if self._is_manual_close:
+                await self._cleanup_ws()
+                return
 
-            self._reconnect_attempts = 0
             self._missed_pong_count = 0
 
             self._logger.info("WebSocket connection established, sending auth...")
@@ -150,11 +167,12 @@ class WsConnectionManager:
             self._logger.error(f"Failed to create WebSocket connection: {e}")
             if self.on_error:
                 self.on_error(e)
-            await self._schedule_reconnect()
+            self._start_reconnect()
 
     async def _cleanup_ws(self) -> None:
         """清理 WebSocket 连接"""
-        if self._receive_task and not self._receive_task.done():
+        if (self._receive_task and self._receive_task is not asyncio.current_task()
+                and not self._receive_task.done()):
             self._receive_task.cancel()
             try:
                 await self._receive_task
@@ -179,39 +197,39 @@ class WsConnectionManager:
                     "body": {
                         "bot_id": self._bot_id,
                         "secret": self._bot_secret,
+                        **self._extra_auth_params,
                     },
                 }
             )
             self._logger.info("Auth frame sent")
         except Exception as e:
             self._logger.error(f"Failed to send auth frame: {e}")
+            raise
 
     async def _receive_loop(self) -> None:
-        """消息接收循环"""
+        """正常关闭和异常关闭均清理回执，并按策略重连。"""
+        reason = "WebSocket connection closed"
+        cancelled = False
         try:
-            async for raw_message in self._ws:  # type: ignore
+            async for raw_message in self._ws:
                 try:
-                    if isinstance(raw_message, bytes):
-                        raw_message = raw_message.decode("utf-8")
-                    frame: WsFrame = json.loads(raw_message)
+                    frame = json.loads(raw_message)
                     self._handle_frame(frame)
-                except json.JSONDecodeError as e:
-                    self._logger.error(f"Failed to parse WebSocket message: {e}")
-        except websockets.exceptions.ConnectionClosed as e:
-            reason_str = str(e) or f"code: {e.code}"
-            self._logger.warn(f"WebSocket connection closed: {reason_str}")
-            self._stop_heartbeat()
-            self._clear_pending_messages(f"WebSocket connection closed ({reason_str})")
-            if self.on_disconnected:
-                self.on_disconnected(reason_str)
-            if not self._is_manual_close:
-                await self._schedule_reconnect()
+                except (json.JSONDecodeError, UnicodeDecodeError) as error:
+                    self._logger.error(f"Failed to parse WebSocket message: {error}")
         except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            self._logger.error(f"WebSocket error: {e}")
-            if self.on_error:
-                self.on_error(e)
+            cancelled = True
+            return
+        except Exception as error:
+            reason = str(error)
+            self._logger.warn(f"WebSocket connection closed: {reason}")
+        finally:
+            self._stop_heartbeat()
+            self._clear_pending_messages(reason)
+            if not cancelled and not self._is_manual_close:
+                if self.on_disconnected:
+                    self.on_disconnected(reason)
+                self._start_reconnect()
 
     def _handle_frame(self, frame: WsFrame) -> None:
         """处理收到的帧数据"""
@@ -227,6 +245,16 @@ class WsConnectionManager:
         # 事件推送
         if cmd == WsCmd.EVENT_CALLBACK:
             self._logger.debug(f"Received event callback: {json.dumps(frame.get('body', {}))}")
+            kicked = (frame.get("body") or {}).get("event", {}).get("eventtype") == "disconnected_event"
+            if kicked:
+                self._is_manual_close = True
+                self._stop_heartbeat()
+                self._clear_pending_messages("Server disconnected due to new connection")
+                self._cancel_reconnect()
+                if self._ws:
+                    asyncio.ensure_future(self._ws.close())
+                if self.on_server_disconnect:
+                    self.on_server_disconnect("New connection established, server disconnected this connection")
             if self.on_message:
                 self.on_message(frame)
             return
@@ -235,11 +263,6 @@ class WsConnectionManager:
         headers = frame.get("headers", {})
         req_id = headers.get("req_id", "")
 
-        # 检查是否是回复消息的回执
-        if req_id in self._pending_acks:
-            self._handle_reply_ack(req_id, frame)
-            return
-
         if req_id.startswith(WsCmd.SUBSCRIBE):
             # 认证响应
             errcode = frame.get("errcode")
@@ -247,6 +270,9 @@ class WsConnectionManager:
                 self._logger.error(
                     f"Authentication failed: errcode={errcode}, errmsg={frame.get('errmsg')}"
                 )
+                self._last_close_was_auth_failure = True
+                if self._ws:
+                    asyncio.ensure_future(self._ws.close())
                 if self.on_error:
                     self.on_error(
                         Exception(
@@ -254,6 +280,9 @@ class WsConnectionManager:
                         )
                     )
                 return
+            self._reconnect_attempts = 0
+            self._auth_failure_attempts = 0
+            self._last_close_was_auth_failure = False
             self._logger.info("Authentication successful")
             self._start_heartbeat()
             if self.on_authenticated:
@@ -272,10 +301,12 @@ class WsConnectionManager:
             self._logger.debug("Received heartbeat ack")
             return
 
+        if req_id in self._pending_acks:
+            self._handle_reply_ack(req_id, frame)
+            return
+
         # 未知帧类型
         self._logger.warn(f"Received unknown frame: {json.dumps(frame)}")
-        if self.on_message:
-            self.on_message(frame)
 
     def _start_heartbeat(self) -> None:
         """启动心跳定时器"""
@@ -288,14 +319,15 @@ class WsConnectionManager:
     def _stop_heartbeat(self) -> None:
         """停止心跳定时器"""
         if self._heartbeat_task and not self._heartbeat_task.done():
-            self._heartbeat_task.cancel()
+            if self._heartbeat_task is not asyncio.current_task():
+                self._heartbeat_task.cancel()
             self._heartbeat_task = None
             self._logger.debug("Heartbeat timer stopped")
 
     async def _heartbeat_loop(self) -> None:
         """心跳循环"""
         try:
-            while True:
+            while self._heartbeat_task is asyncio.current_task():
                 await asyncio.sleep(self._heartbeat_interval / 1000)
                 await self._send_heartbeat()
         except asyncio.CancelledError:
@@ -309,6 +341,8 @@ class WsConnectionManager:
                 f"No heartbeat ack received for {self._missed_pong_count} consecutive pings, "
                 "connection considered dead"
             )
+            # 独立调度，避免底层 close 卡住时无法开始重连；管理器负责去重。
+            self._start_reconnect()
             self._stop_heartbeat()
             # 强制关闭底层连接
             if self._ws:
@@ -335,37 +369,44 @@ class WsConnectionManager:
         except Exception as e:
             self._logger.error(f"Failed to send heartbeat: {e}")
 
-    async def _schedule_reconnect(self) -> None:
-        """安排重连"""
-        if (
-            self._max_reconnect_attempts != -1
-            and self._reconnect_attempts >= self._max_reconnect_attempts
-        ):
-            self._logger.error(
-                f"Max reconnect attempts reached ({self._max_reconnect_attempts}), giving up"
-            )
-            if self.on_error:
-                self.on_error(Exception("Max reconnect attempts exceeded"))
+    def _cancel_reconnect(self) -> None:
+        if self._reconnect_task and self._reconnect_task is not asyncio.current_task():
+            self._reconnect_task.cancel()
+        self._reconnect_task = None
+
+    def _start_reconnect(self) -> None:
+        if self._is_manual_close:
             return
+        if self._reconnect_task and not self._reconnect_task.done():
+            return
+        self._reconnect_task = asyncio.ensure_future(self._schedule_reconnect())
 
-        self._reconnect_attempts += 1
-        # 指数退避：1s, 2s, 4s, 8s … 上限 30s
-        delay = min(
-            self._reconnect_base_delay * (2 ** (self._reconnect_attempts - 1)),
-            self._reconnect_max_delay,
-        )
-
-        self._logger.info(
-            f"Reconnecting in {delay}ms (attempt {self._reconnect_attempts})..."
-        )
+    async def _schedule_reconnect(self) -> None:
+        auth = self._last_close_was_auth_failure
+        limit = self._max_auth_failure_attempts if auth else self._max_reconnect_attempts
+        attempts = self._auth_failure_attempts if auth else self._reconnect_attempts
+        if limit != -1 and attempts >= limit:
+            error = WSAuthFailureError(limit) if auth else WSReconnectExhaustedError(limit)
+            if self.on_error:
+                self.on_error(error)
+            return
+        attempts += 1
+        if auth:
+            self._auth_failure_attempts = attempts
+        else:
+            self._reconnect_attempts = attempts
+        delay = min(self._reconnect_base_delay * (2 ** min(attempts - 1, 30)),
+                    self._reconnect_max_delay)
         if self.on_reconnecting:
-            self.on_reconnecting(self._reconnect_attempts)
-
+            self.on_reconnecting(attempts)
         await asyncio.sleep(delay / 1000)
         if self._is_manual_close:
             return
-
+        self._reconnect_task = None
         await self.connect()
+
+    def has_pending_ack(self, req_id: str) -> bool:
+        return req_id in self._pending_acks
 
     async def send(self, frame: WsFrame) -> None:
         """
@@ -425,6 +466,7 @@ class WsConnectionManager:
 
         # 如果队列中只有这一条，立即开始处理
         if len(queue) == 1 and req_id not in self._processing_queues:
+            self._processing_queues.add(req_id)
             asyncio.ensure_future(self._process_reply_queue(req_id))
 
         return await future
@@ -442,40 +484,35 @@ class WsConnectionManager:
 
                 item = queue[0]
 
+                loop = asyncio.get_event_loop()
+                ack_future = loop.create_future()
+                timeout_handle = loop.call_later(
+                    self._reply_ack_timeout, self._on_reply_ack_timeout, req_id, ack_future)
+                self._pending_acks[req_id] = (ack_future, timeout_handle)
                 try:
                     await self.send(item.frame)
-                    self._logger.debug(
-                        f"Reply message sent via WebSocket, reqId: {req_id}, queue length: {len(queue)}"
-                    )
-                except Exception as e:
-                    self._logger.error(f"Failed to send reply for reqId {req_id}: {e}")
-                    queue.pop(0)
+                except Exception as error:
+                    pending = self._pending_acks.pop(req_id, None)
+                    if pending:
+                        pending[1].cancel()
+                    if not ack_future.done():
+                        ack_future.cancel()
+                    if queue and queue[0] is item:
+                        queue.pop(0)
                     if not item.future.done():
-                        item.future.set_exception(e)
+                        item.future.set_exception(error)
                     continue
-
-                # 等待回执
-                loop = asyncio.get_event_loop()
-                ack_future: asyncio.Future[WsFrame] = loop.create_future()
-
-                # 设置超时
-                timeout_handle = loop.call_later(
-                    self._reply_ack_timeout,
-                    self._on_reply_ack_timeout,
-                    req_id,
-                    ack_future,
-                )
-
-                self._pending_acks[req_id] = (ack_future, timeout_handle)
 
                 try:
                     ack_frame = await ack_future
                     # 成功收到回执
-                    queue.pop(0)
+                    if queue and queue[0] is item:
+                        queue.pop(0)
                     if not item.future.done():
                         item.future.set_result(ack_frame)
                 except Exception as e:
-                    queue.pop(0)
+                    if queue and queue[0] is item:
+                        queue.pop(0)
                     if not item.future.done():
                         item.future.set_exception(e)
         finally:
@@ -544,6 +581,7 @@ class WsConnectionManager:
     def disconnect(self) -> None:
         """主动断开连接（同步方法，安排异步关闭）"""
         self._is_manual_close = True
+        self._cancel_reconnect()
         self._stop_heartbeat()
         self._clear_pending_messages("Connection manually closed")
 
@@ -554,7 +592,8 @@ class WsConnectionManager:
 
     async def _async_disconnect(self) -> None:
         """异步断开连接"""
-        if self._receive_task and not self._receive_task.done():
+        if (self._receive_task and self._receive_task is not asyncio.current_task()
+                and not self._receive_task.done()):
             self._receive_task.cancel()
             try:
                 await self._receive_task

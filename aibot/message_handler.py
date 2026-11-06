@@ -65,6 +65,8 @@ class MessageHandler:
             emitter.emit("message.mixed", frame)
         elif msgtype == MessageType.Voice:
             emitter.emit("message.voice", frame)
+        elif msgtype == MessageType.Video:
+            emitter.emit("message.video", frame)
         elif msgtype == MessageType.File:
             emitter.emit("message.file", frame)
         else:

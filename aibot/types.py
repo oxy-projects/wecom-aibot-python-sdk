@@ -11,7 +11,7 @@
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
+from typing import Any, Dict, List, Optional, Protocol, Literal, TypedDict, Union, runtime_checkable
 
 
 # ========== 通用基础类型 (common.ts) ==========
@@ -58,6 +58,29 @@ class WSClientOptions:
     logger: Optional[Any] = None
     """自定义日志函数"""
 
+    scene: Optional[int] = None
+    plug_version: Optional[str] = None
+    max_auth_failure_attempts: int = 5
+    max_reply_queue_size: int = 500
+    ws_options: Dict[str, Any] = field(default_factory=dict)
+    """传递给 websockets.connect 的参数，例如 ssl=自定义 SSLContext。"""
+
+
+class WSAuthFailureError(RuntimeError):
+    code = "WS_AUTH_FAILURE_EXHAUSTED"
+
+    def __init__(self, attempts: int):
+        self.attempts = attempts
+        super().__init__(f"Max auth failure attempts exceeded ({attempts})")
+
+
+class WSReconnectExhaustedError(RuntimeError):
+    code = "WS_RECONNECT_EXHAUSTED"
+
+    def __init__(self, attempts: int):
+        self.attempts = attempts
+        super().__init__(f"Max reconnect attempts exceeded ({attempts})")
+
 
 # ========== WebSocket 命令常量 (api.ts) ==========
 
@@ -83,6 +106,10 @@ class WsCmd:
 
     SEND_MSG = "aibot_send_msg"
     """主动发送消息"""
+
+    UPLOAD_MEDIA_INIT = "aibot_upload_media_init"
+    UPLOAD_MEDIA_CHUNK = "aibot_upload_media_chunk"
+    UPLOAD_MEDIA_FINISH = "aibot_upload_media_finish"
 
     # ========== 企业微信 → 开发者 ==========
     CALLBACK = "aibot_msg_callback"
@@ -110,8 +137,20 @@ class MessageType(str, Enum):
     Voice = "voice"
     """语音消息"""
 
+    Video = "video"
+    """视频消息"""
+
     File = "file"
     """文件消息"""
+
+
+class MediaType(str, Enum):
+    """临时素材类型；服务端按类型校验大小和格式。"""
+
+    File = "file"
+    Image = "image"
+    Voice = "voice"
+    Video = "video"
 
 
 # ========== 事件类型枚举 (event.ts) ==========
@@ -168,3 +207,17 @@ WsFrame = Dict[str, Any]
 
 WsFrameHeaders = Dict[str, Any]
 """仅包含 headers 的 WsFrame 子集，用于 reply 等方法的参数类型"""
+
+
+WeComMediaType = Literal["file", "image", "voice", "video"]
+
+
+class UploadMediaOptions(TypedDict):
+    type: Union[WeComMediaType, MediaType]
+    filename: str
+
+
+class UploadMediaFinishResult(TypedDict):
+    type: WeComMediaType
+    media_id: str
+    created_at: str
