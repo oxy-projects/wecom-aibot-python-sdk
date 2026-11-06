@@ -450,13 +450,13 @@ def main():
         _shutdown(loop)
     finally:
         log_event("SYSTEM", "STOPPING", {"reason": "shutdown"})
-        ws_client.disconnect()
+        loop.run_until_complete(ws_client.aclose())
+        loop.run_until_complete(loop.shutdown_asyncgens())
         loop.close()
 
 
 def _shutdown(loop: asyncio.AbstractEventLoop):
     log_event("SYSTEM", "STOPPING", {"reason": "signal"})
-    ws_client.disconnect()
     loop.stop()
 
 

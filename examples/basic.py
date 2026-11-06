@@ -244,13 +244,13 @@ def main():
     except KeyboardInterrupt:
         _shutdown(loop)
     finally:
-        ws_client.disconnect()
+        loop.run_until_complete(ws_client.aclose())
+        loop.run_until_complete(loop.shutdown_asyncgens())
         loop.close()
 
 
 def _shutdown(loop: asyncio.AbstractEventLoop):
     print("\n正在停止机器人...")
-    ws_client.disconnect()
     loop.stop()
 
 

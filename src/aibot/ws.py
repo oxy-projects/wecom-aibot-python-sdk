@@ -87,6 +87,7 @@ class WsConnectionManager:
         self._ws: Optional[WebSocketClientProtocol] = None
         self._heartbeat_task: Optional[asyncio.Task[None]] = None
         self._receive_task: Optional[asyncio.Task[None]] = None
+        self._disconnect_task: Optional[asyncio.Task[None]] = None
         self._reconnect_attempts: int = 0
         self._is_manual_close: bool = False
 
@@ -585,8 +586,8 @@ class WsConnectionManager:
         self._stop_heartbeat()
         self._clear_pending_messages("Connection manually closed")
 
-        if self._ws:
-            asyncio.ensure_future(self._async_disconnect())
+        if self._ws and (self._disconnect_task is None or self._disconnect_task.done()):
+            self._disconnect_task = asyncio.ensure_future(self._async_disconnect())
 
         self._logger.info("WebSocket connection manually closed")
 

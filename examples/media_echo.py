@@ -132,7 +132,6 @@ async def on_text(frame):
 
 def _shutdown(loop: asyncio.AbstractEventLoop):
     print("\n[停止] 正在关闭...")
-    ws_client.disconnect()
     loop.stop()
 
 
@@ -150,8 +149,7 @@ def main():
     except KeyboardInterrupt:
         _shutdown(loop)
     finally:
-        ws_client.disconnect()
-        loop.run_until_complete(ws_client._ws_manager._async_disconnect())
+        loop.run_until_complete(ws_client.aclose())
         loop.run_until_complete(loop.shutdown_asyncgens())
         loop.close()
 

@@ -124,6 +124,15 @@ class WSClient(AsyncIOEventEmitter):
         self._ws_manager.disconnect()
         self._logger.info("Disconnected")
 
+    async def aclose(self) -> None:
+        """断开连接并等待后台连接任务完成，关闭事件循环前应等待此方法。"""
+        if self._started:
+            self.disconnect()
+        if self._ws_manager._disconnect_task is not None:
+            await self._ws_manager._disconnect_task
+        else:
+            await self._ws_manager._async_disconnect()
+
     async def reply(
         self,
         frame: WsFrameHeaders,
@@ -485,10 +494,7 @@ class WSClient(AsyncIOEventEmitter):
         try:
             loop.run_until_complete(self.connect())
             loop.run_forever()
-        except KeyboardInterrupt:
-            self.disconnect()
         finally:
-            self.disconnect()
-            loop.run_until_complete(self._ws_manager._async_disconnect())
+            loop.run_until_complete(self.aclose())
             loop.run_until_complete(loop.shutdown_asyncgens())
             loop.close()

@@ -85,6 +85,26 @@ class FeatureTests(unittest.IsolatedAsyncioTestCase):
         manager._ws.close.assert_awaited_once()
         self.assertIsNone(manager._heartbeat_task)
 
+    async def test_aclose_waits_for_background_tasks(self):
+        manager = self.client._ws_manager
+        ws = Mock(open=True, close=AsyncMock())
+        manager._ws = ws
+        self.client._started = True
+        manager._receive_task = asyncio.create_task(asyncio.sleep(3600))
+        manager._start_heartbeat()
+        receive = manager._receive_task
+        heartbeat = manager._heartbeat_task
+
+        await self.client.aclose()
+        await self.client.aclose()
+
+        self.assertTrue(receive.done())
+        self.assertTrue(heartbeat.done())
+        self.assertTrue(manager._disconnect_task.done())
+        self.assertFalse(self.client.is_connected)
+        ws.close.assert_awaited_once()
+        self.client._logger.warn.assert_not_called()
+
     async def test_disconnect_during_connection_open(self):
         manager = self.client._ws_manager
         ws = Mock(open=True, close=AsyncMock())
